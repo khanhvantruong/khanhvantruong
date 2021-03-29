@@ -1,233 +1,330 @@
-const int trig = 8;     // chân trig của HC-SR04
-const int echo = 7;     // chân echo của HC-SR04
-
+#include <WebSocketsServer.h>
 #include <WiFi.h>
-//
-//  PSRAM IC required for UXGA resolution and high JPEG quality
-//  Ensure ESP32 Wrover Module or other board with PSRAM is selected
-//  Partial images will be transmitted if image exceeds buffer size
-//
+#include <WiFiUdp.h>
+#include "camera_wrap.h"
 
-// Select camera model
-#define CAMERA_MODEL_WROVER_KIT // Has PSRAM
-//#define CAMERA_MODEL_ESP_EYE // Has PSRAM
-//#define CAMERA_MODEL_M5STACK_PSRAM // Has PSRAM
-//#define CAMERA_MODEL_M5STACK_V2_PSRAM // M5Camera version B Has PSRAM
-//#define CAMERA_MODEL_M5STACK_WIDE // Has PSRAM
-//#define CAMERA_MODEL_M5STACK_ESP32CAM // No PSRAM
-//#define CAMERA_MODEL_AI_THINKER // Has PSRAM
-//#define CAMERA_MODEL_TTGO_T_JOURNAL // No PSRAM
-//#include "camera_pins.h"
+ #define DEBUG
+// #define SAVE_IMG
 
-const char* ssid = "NHA HANG HOANG GIA";
-const char* password = "88888888";
+enum TRACK{
+  TRACK_NONE = 0,
+  TRACK_FW,
+  TRACK_LEFT,
+  TRACK_RIGHT,
+  TRACK_STOP
+};
 
-void startCameraServer(); 
+const char* ssid = "Sky2p805";    // <<< change this as yours
+const char* password = "12345678"; // <<< change this as yours
+//holds the current upload
+int cameraInitState = -1;
+uint8_t* jpgBuff = new uint8_t[68123];
+size_t   jpgLength = 0;
+uint8_t camNo=0;
+bool clientConnected = false;
 
-#define MOTORLATCH 12 
-#define MOTORCLK 4 
-#define MOTORENABLE 7 
-#define MOTORDATA 8 
-#define MOTOR1_A 2 
-#define MOTOR1_B 3 
-#define MOTOR2_A 1 
-#define MOTOR2_B 4 
-#define MOTOR3_A 5 
-#define MOTOR3_B 7 
-#define MOTOR4_A 0 
-#define MOTOR4_B 6 
-#define MOTOR1_PWM 11 
-#define MOTOR2_PWM 3 
-#define MOTOR3_PWM 6 
-#define MOTOR4_PWM 5 
-#define SERVO1_PWM 10 
-#define SERVO2_PWM 9 
-#define FORWARD 1 
-#define BACKWARD 2 
-#define BRAKE 3 
-#define RELEASE 4 
-void setup() {
-    Serial.begin(9600);     // giao tiếp Serial với baudrate 9600
-    pinMode(trig,OUTPUT);   // chân trig sẽ phát tín hiệu
-    pinMode(echo,INPUT);    // chân echo sẽ nhận tín hiệu
-}
- 
-void loop()
-{
-    unsigned long duration; // biến đo thời gian
-    int distance;           // biến lưu khoảng cách
-    
-    /* Phát xung từ chân trig */
-    digitalWrite(trig,0);   // tắt chân trig
-    delayMicroseconds(2);
-    digitalWrite(trig,1);   // phát xung từ chân trig
-    delayMicroseconds(5);   // xung có độ dài 5 microSeconds
-    digitalWrite(trig,0);   // tắt chân trig
+//Creating UDP Listener Object. 
+WiFiUDP UDPServer;
+IPAddress addrRemote;
+unsigned int portRemote;
+unsigned int UDPPort = 6868;
+const int RECVLENGTH = 16;
+byte packetBuffer[RECVLENGTH];
 
-    /* Tính toán thời gian */
-    // Đo độ rộng xung HIGH ở chân echo. 
-    duration = pulseIn(echo,HIGH);  
-    // Tính khoảng cách đến vật.
-    distance = int(duration/2/29.412);
+WebSocketsServer webSocket = WebSocketsServer(86);
+String html_home;
 
-motor(1, FORWARD, 230);
-motor(2, FORWARD, 230);
-motor(3, FORWARD, 230);
-motor(4, FORWARD, 230);
-delay(2000);
-motor(1, RELEASE, 0);
-motor(2, RELEASE, 0);
-motor(3, RELEASE, 0);
-motor(4, RELEASE, 0);
-delay(100);
-motor(1, TURNRIGHT, 128);
-motor(2, TURNRIGHT, 128);
-motor(3, TURNRIGHT, 128);
-motor(4, TURNRIGHT, 128);
-delay(2000);
-motor(1, RELEASE, 0);
-motor(2, RELEASE, 0);
-motor(3, RELEASE, 0);
-motor(4, RELEASE, 0);
-delay(100);
-motor(1, FORWARD, 230); 
-motor(2, FORWARD, 230);
-motor(3, FORWARD, 230);
-motor(4, FORWARD, 230);
-delay(2000);
-motor(1, RELEASE, 0);
-motor(2, RELEASE, 0);
-motor(3, RELEASE, 0);
-motor(4, RELEASE, 0);
-delay(100);
-motor(1, TURNLEFT, 128);
-motor(2, TURNLEFT, 128);
-motor(3, TURNLEFT, 128);
-motor(4, TURNLEFT, 128);
-delay(2000);
-case 1: 
-  motorA = MOTOR1_A;
-  motorB = MOTOR1_B;
-  break; 
-  case 2: 
-  motorA = MOTOR2_A;
-  motorB = MOTOR2_B;
-  break; 
-  case 3: 
-  motorA = MOTOR3_A;
-  motorB = MOTOR3_B;
-  break; 
-  case 4: 
-  motorA = MOTOR4_A;
-  motorB = MOTOR4_B;
-  break; 
-  default: 
-  break; 
-    /* In kết quả ra Serial Monitor */
-    Serial.print(distance);
-    Serial.println("cm");
-    delay(200);
-  
+const int LED_BUILT_IN        = 4;
+const uint8_t TRACK_DUTY      = 100;
+const int PIN_SERVO_PITCH     = 12;
+// const int PIN_SERVO_YAW       = 2;
+const int PINDC_LEFT_BACK     = 13;
+const int PINDC_LEFT_FORWARD  = 15;
+const int PINDC_RIGHT_BACK    = 14;
+const int PINDC_RIGHT_FORWARD = 2;
+const int LEFT_CHANNEL        = 2;
+const int RIGHT_CHANNEL       = 3;
+const int SERVO_PITCH_CHANNEL = 4;
+const int SERVO_YAW_CHANNEL   = 5;
+const int SERVO_RESOLUTION    = 16;
+unsigned long previousMillisServo = 0;
+const unsigned long intervalServo = 10;
+bool servoUp = false;
+bool servoDown = false;
+bool servoRotateLeft = false;
+bool servoRotateRight = false;
+int posServo = 75;
+int PWMTrackHIGH = 138;
+int PWMTrackLOW = 138;
+
+void servoWrite(uint8_t channel, uint8_t angle) {
+  // regarding the datasheet of sg90 servo, pwm period is 20 ms and duty is 1->2ms
+  uint32_t maxDuty = (pow(2,SERVO_RESOLUTION)-1)/10; 
+  uint32_t minDuty = (pow(2,SERVO_RESOLUTION)-1)/20; 
+  uint32_t duty = (maxDuty-minDuty)*angle/180 + minDuty;
+  ledcWrite(channel, duty);
 }
 
-//
-//  PSRAM IC required for UXGA resolution and high JPEG quality
-//  Ensure ESP32 Wrover Module or other board with PSRAM is selected
-//  Partial images will be transmitted if image exceeds buffer size
-//
+void controlServo(){
+  if(servoUp){
+    if(posServo>2){
+      posServo -= 2;
+    }
+  }
+  if(servoDown){
+    if(posServo<180){
+      posServo += 2;
+    }
+  }
+  servoWrite(SERVO_PITCH_CHANNEL,posServo);
+}
 
-// Select camera model
-#define CAMERA_MODEL_WROVER_KIT // Has PSRAM
-//#define CAMERA_MODEL_ESP_EYE // Has PSRAM
-//#define CAMERA_MODEL_M5STACK_PSRAM // Has PSRAM
-//#define CAMERA_MODEL_M5STACK_V2_PSRAM // M5Camera version B Has PSRAM
-//#define CAMERA_MODEL_M5STACK_WIDE // Has PSRAM
-//#define CAMERA_MODEL_M5STACK_ESP32CAM // No PSRAM
-//#define CAMERA_MODEL_AI_THINKER // Has PSRAM
-//#define CAMERA_MODEL_TTGO_T_JOURNAL // No PSRAM
-void setup<2> {
-  Serial.begin(115200);
-  Serial.setDebugOutput(true);
-  Serial.println();
+void controlDC(int left0, int left1, int right0, int right1){
+  digitalWrite(PINDC_LEFT_BACK, left0);
+  if(left1 == HIGH){
+    ledcWrite(LEFT_CHANNEL, 255);
+  }else{
+    ledcWrite(LEFT_CHANNEL, 0);
+  }
+  digitalWrite(PINDC_RIGHT_BACK, right0);
+  if(right1 == HIGH){
+    ledcWrite(RIGHT_CHANNEL, 255);
+  }else{
+    ledcWrite(RIGHT_CHANNEL, 0);
+  }
+}
 
-  camera_config_t config;
-  config.ledc_channel = LEDC_CHANNEL_0;
-  config.ledc_timer = LEDC_TIMER_0;
-  config.pin_d0 = Y2_GPIO_NUM;
-  config.pin_d1 = Y3_GPIO_NUM;
-  config.pin_d2 = Y4_GPIO_NUM;
-  config.pin_d3 = Y5_GPIO_NUM;
-  config.pin_d4 = Y6_GPIO_NUM;
-  config.pin_d5 = Y7_GPIO_NUM;
-  config.pin_d6 = Y8_GPIO_NUM;
-  config.pin_d7 = Y9_GPIO_NUM;
-  config.pin_xclk = XCLK_GPIO_NUM;
-  config.pin_pclk = PCLK_GPIO_NUM;
-  config.pin_vsync = VSYNC_GPIO_NUM;
-  config.pin_href = HREF_GPIO_NUM;
-  config.pin_sscb_sda = SIOD_GPIO_NUM;
-  config.pin_sscb_scl = SIOC_GPIO_NUM;
-  config.pin_pwdn = PWDN_GPIO_NUM;
-  config.pin_reset = RESET_GPIO_NUM;
-  config.xclk_freq_hz = 20000000;
-  config.pixel_format = PIXFORMAT_JPEG;
-  
-  // if PSRAM IC present, init with UXGA resolution and higher JPEG quality
-  //                      for larger pre-allocated frame buffer.
-  if(psramFound()){
-    config.frame_size = FRAMESIZE_UXGA;
-    config.jpeg_quality = 10;
-    config.fb_count = 2;
-  } else {
-    config.frame_size = FRAMESIZE_SVGA;
-    config.jpeg_quality = 12;
-    config.fb_count = 1;
+void controlDCTrack(int left, int right){
+  digitalWrite(PINDC_LEFT_BACK, 0);
+  ledcWrite(LEFT_CHANNEL, left);
+  digitalWrite(PINDC_RIGHT_BACK, 0);
+  ledcWrite(RIGHT_CHANNEL, right);
+}
+
+void webSocketEvent(uint8_t num, WStype_t type, uint8_t * payload, size_t length) {
+
+  switch(type) {
+      case WStype_DISCONNECTED:
+          Serial.printf("[%u] Disconnected!\n", num);
+          camNo = num;
+          clientConnected = false;
+          break;
+      case WStype_CONNECTED:
+          Serial.printf("[%u] Connected!\n", num);
+          clientConnected = true;
+          break;
+      case WStype_TEXT:
+      case WStype_BIN:
+      case WStype_ERROR:
+      case WStype_FRAGMENT_TEXT_START:
+      case WStype_FRAGMENT_BIN_START:
+      case WStype_FRAGMENT:
+      case WStype_FRAGMENT_FIN:
+          Serial.println(type);
+          break;
+  }
+}
+
+std::vector<String> splitString(String data, String delimiter){
+    std::vector<String> ret;
+    // initialize first part (string, delimiter)
+    char* ptr = strtok((char*)data.c_str(), delimiter.c_str());
+
+    while(ptr != NULL) {
+        ret.push_back(String(ptr));
+        // create next part
+        ptr = strtok(NULL, delimiter.c_str());
+    }
+    return ret;
+}
+
+void processUDPData(){
+  int cb = UDPServer.parsePacket();
+
+  if (cb) {
+      UDPServer.read(packetBuffer, RECVLENGTH);
+      addrRemote = UDPServer.remoteIP();
+      portRemote = UDPServer.remotePort();
+
+      String strPackage = String((const char*)packetBuffer);
+  #ifdef DEBUG
+      Serial.print("receive: ");
+      // for (int y = 0; y < RECVLENGTH; y++){
+      //   Serial.print(packetBuffer[y]);
+      //   Serial.print("\n");
+      // }
+      Serial.print(strPackage);
+      Serial.print(" from: ");
+      Serial.print(addrRemote);
+      Serial.print(":");
+      Serial.println(portRemote);
+  #endif
+      if(strPackage.equals("whoami")){
+          UDPServer.beginPacket(addrRemote, portRemote-1);
+          String res = "ESP32-CAM";
+          UDPServer.write((const uint8_t*)res.c_str(),res.length());
+          UDPServer.endPacket();
+          Serial.println("response");
+      }else if(strPackage.equals("forward")){
+//        controlDC(LOW,HIGH,LOW,HIGH);
+    	  tien();
+      }else if(strPackage.equals("backward")){
+//        controlDC(HIGH,LOW,HIGH,LOW);
+    	  lui();
+      }else if(strPackage.equals("left")){
+//        controlDC(LOW,LOW,LOW,HIGH);
+    	  trai();
+      }else if(strPackage.equals("right")){
+//        controlDC(LOW,HIGH,LOW,LOW);
+    	  phai();
+      }else if(strPackage.equals("stop")){
+//        controlDC(LOW,LOW,LOW,LOW);
+    	  dung();
+      }else if(strPackage.equals("camup")){
+//        servoUp = true;
+    	  lui();
+      }else if(strPackage.equals("camdown")){
+//        servoDown = true;
+    	  tien();
+      }else if(strPackage.equals("camstill")){
+        servoUp = false;
+        servoDown = false;
+        dung();
+      }else if(strPackage.equals("ledon")){
+        digitalWrite(LED_BUILT_IN, HIGH);
+      }else if(strPackage.equals("ledoff")){
+        digitalWrite(LED_BUILT_IN, LOW);
+      }else if(strPackage.equals("lefttrack")){
+        controlDCTrack(0, PWMTrackHIGH);
+      }else if(strPackage.equals("righttrack")){
+        controlDCTrack(PWMTrackHIGH, 0);
+      }else if(strPackage.equals("fwtrack")){
+        controlDCTrack(PWMTrackLOW, PWMTrackLOW);
+      }
+
+      memset(packetBuffer, 0, RECVLENGTH);
   }
 
-#if defined(CAMERA_MODEL_ESP_EYE)
-  pinMode(13, INPUT_PULLUP);
-  pinMode(14, INPUT_PULLUP);
-#endif
+}
 
-  // camera init
-  esp_err_t err = esp_camera_init(&config);
-  if (err != ESP_OK) {
-    Serial.printf("Camera init failed with error 0x%x", err);
+void setup(void) {
+
+  Serial.begin(115200);
+  Serial.print("\n");
+  #ifdef DEBUG
+  Serial.setDebugOutput(true);
+  #endif
+
+  pinMode(LED_BUILT_IN, OUTPUT);
+  digitalWrite(LED_BUILT_IN, LOW);
+
+  pinMode(PINDC_LEFT_BACK, OUTPUT);
+  ledcSetup(LEFT_CHANNEL, 100, 8);//channel, freq, resolution
+  ledcAttachPin(PINDC_LEFT_FORWARD, LEFT_CHANNEL);
+  pinMode(PINDC_RIGHT_BACK, OUTPUT);
+  ledcSetup(RIGHT_CHANNEL, 100, 8);//channel, freq, resolution
+  ledcAttachPin(PINDC_RIGHT_FORWARD, RIGHT_CHANNEL);
+
+  controlDC(LOW,LOW,LOW,LOW);
+
+  // 1. 50hz ==> period = 20ms (sg90 servo require 20ms pulse, duty cycle is 1->2ms: -90=>90degree)
+  // 2. resolution = 16, maximum value is 2^16-1=65535
+  // From 1 and 2 => -90=>90 degree or 0=>180degree ~ 3276=>6553
+  ledcSetup(SERVO_PITCH_CHANNEL, 50, 16);//channel, freq, resolution
+  ledcAttachPin(PIN_SERVO_PITCH, SERVO_PITCH_CHANNEL);// pin, channel
+  servoWrite(SERVO_PITCH_CHANNEL, posServo);
+
+  // ledcSetup(SERVO_YAW_CHANNEL, 50, 16);//channel, freq, resolution
+  // ledcAttachPin(PIN_SERVO_YAW, SERVO_YAW_CHANNEL);// pin, channel
+  // servoWrite(SERVO_YAW_CHANNEL, posServo);
+
+  cameraInitState = initCamera();
+
+  Serial.printf("camera init state %d\n", cameraInitState);
+
+  if(cameraInitState != 0){
     return;
   }
 
-  sensor_t * s = esp_camera_sensor_get();
-  // initial sensors are flipped vertically and colors are a bit saturated
-  if (s->id.PID == OV3660_PID) {
-    s->set_vflip(s, 1); // flip it back
-    s->set_brightness(s, 1); // up the brightness just a bit
-    s->set_saturation(s, -2); // lower the saturation
+  //WIFI INIT
+  Serial.printf("Connecting to %s\n", ssid);
+  if (String(WiFi.SSID()) != String(ssid)) {
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(ssid, password);
   }
-  // drop down frame size for higher initial frame rate
-  s->set_framesize(s, FRAMESIZE_QVGA);
-
-#if defined(CAMERA_MODEL_M5STACK_WIDE) || defined(CAMERA_MODEL_M5STACK_ESP32CAM)
-  s->set_vflip(s, 1);
-  s->set_hmirror(s, 1);
-#endif
-
-  WiFi.begin(ssid, password);
 
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
   }
   Serial.println("");
-  Serial.println("WiFi connected");
+  Serial.print("Connected! IP address: ");
+  String ipAddress = WiFi.localIP().toString();;
+  Serial.println(ipAddress);
 
-  startCameraServer();
+  webSocket.begin();
+  webSocket.onEvent(webSocketEvent);
 
-  Serial.print("Camera Ready! Use 'http://");
-  Serial.print(WiFi.localIP());
-  Serial.println("' to connect");
+  UDPServer.begin(UDPPort); 
 }
 
-void loop(2) {
-  // put your main code here, to run repeatedly:
-  delay(10000);
+void loop(void) {
+  webSocket.loop();
+  if(clientConnected == true){
+    grabImage(jpgLength, jpgBuff);
+    webSocket.sendBIN(camNo, jpgBuff, jpgLength);
+    // Serial.print("send img: ");
+    // Serial.println(jpgLength);
+  }
+
+  unsigned long currentMillis = millis();
+  if (currentMillis - previousMillisServo >= intervalServo) {
+    previousMillisServo = currentMillis;
+    processUDPData();
+    controlServo();
+  }
+
+  #ifdef DEBUG
+  if (Serial.available()) {
+    String data = Serial.readString();
+    Serial.println(data);
+    std::vector<String> vposVals = splitString(data, ",");
+    if(vposVals.size() != 4){
+      return;
+    }
+    int left0 = vposVals[0].toInt();
+    int left1 = vposVals[1].toInt();
+    int left2 = vposVals[2].toInt();
+    int left3 = vposVals[3].toInt();
+    controlDC(left0, left1, left2, left3);
+  }
+  #endif
+}
+
+void tien() {
+	controlDC(LOW,HIGH,LOW,HIGH);
+	delay(100);
+	dung();
+}
+
+void lui() {
+	controlDC(HIGH,LOW,HIGH,LOW);
+	delay(100);
+		dung();
+}
+
+void trai() {
+	controlDC(LOW,LOW,LOW,HIGH);
+	delay(100);
+		dung();
+}
+
+void phai() {
+	controlDC(LOW,HIGH,LOW,LOW);
+	delay(100);
+		dung();
+}
+
+void dung() {
+	controlDC(LOW,LOW,LOW,LOW);
 }
